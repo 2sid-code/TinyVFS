@@ -223,13 +223,6 @@ Files are stored contiguously. There is no fragmentation support — if a large 
 - **26-character filename limit.** Longer names are silently truncated.
 - **Alpha disk format.** See the warning at the top of this document.
 
----
-
-## Contributing
-
-Bug reports and pull requests are welcome. Please open an issue before starting major work so we can discuss direction. For C changes, run `make test` before submitting. For Python changes, verify all five CLI commands work end-to-end against a fresh disk.
-
----
 
 ## License
 
