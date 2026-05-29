@@ -1,9 +1,9 @@
 # TinyVFS
 
-A minimal virtual file system implemented in C with a Python CLI frontend. TinyVFS lets you create and manage portable binary disk images on your host OS, with support for importing, exporting, listing, and deleting files.
+A tiny virtual file system built in C, with a Python CLI to drive it. TinyVFS is a hands-on exploration of how filesystems work under the hood. Cluster allocation, directory tables, bitmap tracking packed into a single binary disk image you can poke at, break, and learn from.
 
 > [WARNING]
-> **ALPHA SOFTWARE — DISK FORMAT IS UNSTABLE**
+> **ALPHA SOFTWARE - DISK FORMAT IS UNSTABLE**
 > TinyVFS is in active development. The on-disk format (cluster layout, table structure, bitmap encoding) **may change without notice between versions.** Virtual disks created with the current version are **not guaranteed to be readable by future versions.** Do not rely on TinyVFS disks for anything you cannot afford to lose. Always keep originals of any files you import.
 
 ---
@@ -16,14 +16,13 @@ A minimal virtual file system implemented in C with a Python CLI frontend. TinyV
 - [Usage](#usage)
 - [Disk Layout](#disk-layout)
 - [Limitations](#limitations)
-- [Contributing](#contributing)
 - [License](#license)
 
 ---
 
 ## How It Works
 
-TinyVFS simulates a block-storage device inside a single binary file on your host OS. The C engine (`src/vfs.c`) handles all low-level I/O — cluster reads/writes, bitmap-based page allocation, and a flat root directory table. The Python CLI (`tinyvfs.py`) wraps the compiled shared library via `ctypes` and exposes a clean command-line interface.
+TinyVFS simulates a block-storage device inside a single binary file on your host OS. The design is intentionally straightforward: the C engine (`src/vfs.c`) handles cluster reads/writes, bitmap-based page allocation, and a flat root directory table, all the moving parts of a real filesystem, kept small enough to read in an afternoon. The Python CLI (`tinyvfs.py`) wraps the compiled shared library via `ctypes` and exposes a clean command-line interface.
 
 ```
 ┌─────────────────────────────────────────────────────┐
@@ -35,7 +34,7 @@ TinyVFS simulates a block-storage device inside a single binary file on your hos
 └─────────────────────────────────────────────────────┘
 ```
 
-Each cluster is 64 KB. The root directory table (Cluster 0) stores up to 2048 file entries. The allocation bitmap (Cluster 1) tracks which 256-byte pages are in use.
+Each cluster is 64 KB. The root directory table (Cluster 0) stores up to 2048 file entries. The allocation bitmap (Cluster 1) tracks which 256-byte pages are in use. Every design choice is visible and traceable. There's nothing hiding behind layers of abstraction.
 
 ---
 
@@ -91,7 +90,7 @@ python tinyvfs.py <command> [arguments] [options]
 
 ---
 
-### `create` — Format a new virtual disk
+### `create` - Format a new virtual disk
 
 ```bash
 python tinyvfs.py create <disk> [--size BYTES]
@@ -111,7 +110,7 @@ python tinyvfs.py create my.bin --size 4194304   # 4 MB disk
 
 ---
 
-### `import` — Write a host file into the VFS
+### `import` - Write a host file into the VFS
 
 ```bash
 python tinyvfs.py import <disk> <host_path> <vfs_path>
@@ -132,7 +131,7 @@ python tinyvfs.py import my.bin ./photo.jpg photo.jpg
 
 ---
 
-### `export` — Read a VFS file back to the host OS
+### `export` - Read a VFS file back to the host OS
 
 ```bash
 python tinyvfs.py export <disk> <vfs_path> <host_path>
@@ -153,7 +152,7 @@ python tinyvfs.py export my.bin photo.jpg ./recovered_photo.jpg
 
 ---
 
-### `ls` — List all files in the VFS
+### `ls` - List all files in the VFS
 
 ```bash
 python tinyvfs.py ls <disk>
@@ -175,7 +174,7 @@ notes.txt                    | 1            | 2/14
 
 ---
 
-### `rm` — Delete a file from the VFS
+### `rm` - Delete a file from the VFS
 
 ```bash
 python tinyvfs.py rm <disk> <vfs_path>
@@ -193,7 +192,6 @@ Removes a file's directory entry and frees its allocated pages in the bitmap.
 python tinyvfs.py rm my.bin photo.jpg
 ```
 
-
 ---
 
 ## Disk Layout
@@ -210,19 +208,22 @@ python tinyvfs.py rm my.bin photo.jpg
 - **Max filename length:** 26 characters
 - **Max files:** 2,048 entries in the root directory
 
-Files are stored contiguously. There is no fragmentation support — if a large enough contiguous run of free pages cannot be found, the write will fail.
+Files are stored contiguously. There is no fragmentation support. If a large enough contiguous run of free pages cannot be found, the write will fail. This constraint is a useful illustration of why real-world filesystems invest in extent trees and free-space management.
 
 ---
 
 ## Limitations
 
-- **Flat root directory only.** There are no subdirectories.
+TinyVFS keeps its scope tight by design. Understanding *why* these constraints exist is half the point.
+
+- **Flat root directory only.** There are no subdirectories. A good starting point for exploring how directory trees are typically built on top of simpler structures.
 - **Contiguous allocation only.** Heavily fragmented disks may fail to store files even when total free space is sufficient. Deleting files and re-importing can help.
-- **No journaling or crash recovery.** A process kill mid-write may corrupt the disk image.
-- **No duplicate filename detection.** Importing two files with the same VFS name will create two entries and the second will shadow the first on reads.
+- **No journaling or crash recovery.** A process kill mid-write may corrupt the disk image, exactly the kind of failure that motivated journaling in production filesystems.
+- **No duplicate filename detection.** Importing two files with the same VFS name will create two entries; the second will shadow the first on reads.
 - **26-character filename limit.** Longer names are silently truncated.
 - **Alpha disk format.** See the warning at the top of this document.
 
+---
 
 ## License
 
@@ -230,4 +231,6 @@ MIT License. See `LICENSE` for details.
 
 ---
 
-A note on this README: This document was drafted with AI assistance and reviewed by a human. All project code was written entirely by hand.
+*A note on this README: This document was drafted with AI assistance and reviewed by a human. All project code was written entirely by hand.*
+
+---

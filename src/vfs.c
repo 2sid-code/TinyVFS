@@ -3,8 +3,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-
-
 // ============================================================================
 // File System Geometry & Configurations
 // ============================================================================
@@ -39,7 +37,6 @@ typedef enum {
     bm_unknown
 } BitmapStatus;
 
-
 // ============================================================================
 // Core Data Structures
 // ============================================================================
@@ -65,18 +62,23 @@ typedef struct {
 } BitPosition;
 
 // ============================================================================
-// Forward Declarations
+// RAM Buffers (Mirrors of Virtual Disk)
 // ============================================================================
-BitmapStatus markBitUsed(int bitNum);
-BitmapStatus markBitUnused(int bitNum);
-BitmapStatus freeAllocation(Address startAddress, uint16_t lengthPages);
+
+// RAM Buffer holding loaded disk
+typedef struct {
+    uint8_t loadedCluster[CLUSTER_SIZE];                            // Buffer for general data I/O
+    uint8_t loadedBitmap[CLUSTER_SIZE];                             // Holds Cluster 1 ( Allocation Bitmap )
+    TableEntry loadedTable[CLUSTER_SIZE / sizeof(TableEntry)];      // Holds Cluster 0 ( Root Directory )
+} Buffer;
 
 // ============================================================================
-// Global RAM Buffers (Mirrors of Virtual Disk)
+// Forward Declarations
 // ============================================================================
-uint8_t loadedCluster[CLUSTER_SIZE];                                // Buffer for general data I/O
-uint8_t loadedBitmap[CLUSTER_SIZE];                                 // Holds Cluster 1 (Allocation Bitmap)
-TableEntry loadedTable[CLUSTER_SIZE / sizeof(TableEntry)];          // Holds Cluster 0 (Root Directory)
+
+BitmapStatus markBitUsed(int bitNum, Buffer* buffer);
+BitmapStatus markBitUnused(int bitNum, Buffer* buffer);
+BitmapStatus freeAllocation(Address startAddress, uint16_t lengthPages, Buffer *buffer);
 
 // ============================================================================
 // Low-Level Disk Operations
@@ -167,16 +169,16 @@ FileStatus writeChunk(const char* path, int chunkIndex, uint8_t* inBuffer) {
 // System Structure Syncing Wrappers
 // ============================================================================
 
-FileStatus readTable(const char* path) {
-    return loadChunk(path, 0, (uint8_t*)loadedTable);
+FileStatus readTable(const char* path, Buffer *buffer) {
+    return loadChunk(path, 0, (uint8_t*)buffer->loadedTable);
 }
 
-FileStatus syncTable(const char* path) {
-    return writeChunk(path, 0, (uint8_t*)loadedTable);
+FileStatus syncTable(const char* path, Buffer *buffer) {
+    return writeChunk(path, 0, (uint8_t*)buffer->loadedTable);
 }
 
-FileStatus syncBitmap(const char* path) {
-    return writeChunk(path, 1, (uint8_t*)loadedBitmap);
+FileStatus syncBitmap(const char* path, Buffer *buffer) {
+    return writeChunk(path, 1, buffer->loadedBitmap);
 }
 
 // ============================================================================
@@ -186,13 +188,13 @@ FileStatus syncBitmap(const char* path) {
 /**
  * Adds an entry metadata record into the first available empty slot.
  */
-TableStatus addTableEntry(TableEntry* inBuffer, TableEntry* entry) {
+TableStatus addTableEntry(Buffer *buffer, TableEntry* entry) {
     int emptyIndex = 0;
     int foundIndex = 0;
 
     // Scan for an unused slot (name begins with null terminator)
     for (int i = 0; i < CLUSTER_SIZE / sizeof(TableEntry); i++) {
-        if (inBuffer[i].name[0] == '\0') {
+        if (buffer->loadedTable[i].name[0] == '\0') {
             emptyIndex = i;
             foundIndex = 1;
             break;
@@ -203,7 +205,7 @@ TableStatus addTableEntry(TableEntry* inBuffer, TableEntry* entry) {
         return ts_out_of_capacity;
     }
 
-    inBuffer[emptyIndex] = *entry;
+    buffer->loadedTable[emptyIndex] = *entry;
     return ts_success;
 }
 
@@ -211,13 +213,13 @@ TableStatus addTableEntry(TableEntry* inBuffer, TableEntry* entry) {
  * Removes an entry from the table buffer by matching its name.
  * Reclaims the allocated pages in the bitmap to prevent memory leaks.
  */
-TableStatus removeTableEntry(TableEntry* inBuffer, const char* name) {
+TableStatus removeTableEntry(Buffer *buffer, const char* name) {
     int fileIndex = -1;
 
     // Scan for the target file
     for (int i = 0; i < CLUSTER_SIZE / sizeof(TableEntry); i++) {
         // strncmp ensures we never read past the 27-byte boundary
-        if (strncmp(inBuffer[i].name, name, 27) == 0) {
+        if (strncmp(buffer->loadedTable[i].name, name, 27) == 0) {
             fileIndex = i;
             break;
         }
@@ -228,9 +230,9 @@ TableStatus removeTableEntry(TableEntry* inBuffer, const char* name) {
     }
 
     // Reference the found entry
-    TableEntry* targetFile = &inBuffer[fileIndex];
+    TableEntry* targetFile = &buffer->loadedTable[fileIndex];
 
-    freeAllocation(targetFile->address, targetFile->pagesOccupied);
+    freeAllocation(targetFile->address, targetFile->pagesOccupied, buffer);
 
     // Clear the directory table metadata
     targetFile->name[0] = '\0';
@@ -280,27 +282,27 @@ BitPosition getBitAddr(int bitNum) {
 /**
  * Marks a specific page index as USED (1).
  */
-BitmapStatus markBitUsed(int bitNum) {
+BitmapStatus markBitUsed(int bitNum, Buffer *buffer) {
     // Prevent out-of-bounds array access (array is size CLUSTER_SIZE)
     if (bitNum < 0 || bitNum >= CLUSTER_SIZE * 8) {
         return bm_out_of_bounds;
     }
 
     BitPosition pos = getBitAddr(bitNum);
-    setBit(&loadedBitmap[pos.byte], pos.bit, 1);
+    setBit(&buffer->loadedBitmap[pos.byte], pos.bit, 1);
     return bm_success;
 }
 
 /**
  * Marks a specific page index as UNUSED (0).
  */
-BitmapStatus markBitUnused(int bitNum) {
+BitmapStatus markBitUnused(int bitNum, Buffer *buffer) {
     if (bitNum < 0 || bitNum >= CLUSTER_SIZE * 8) {
         return bm_out_of_bounds;
     }
 
     BitPosition pos = getBitAddr(bitNum);
-    setBit(&loadedBitmap[pos.byte], pos.bit, 0);
+    setBit(&buffer->loadedBitmap[pos.byte], pos.bit, 0);
     return bm_success;
 }
 
@@ -310,7 +312,7 @@ BitmapStatus markBitUnused(int bitNum) {
  * @param totalClusters Total capacity of the disk (prevents scanning beyond physical limits).
  * @return Address      The mapped cluster/page coordinates.
  */
-Address falloc(uint16_t sizePages, int totalClusters) {
+Address falloc(uint16_t sizePages, int totalClusters, Buffer *buffer) {
     Address allocatedAddr;
 
     // Total physical pages available on the initialized disk
@@ -335,14 +337,14 @@ Address falloc(uint16_t sizePages, int totalClusters) {
     for (int i = RESERVED_BITMAP_BYTES; i < maxBitmapBytesToCheck; i++) {
 
         // Optimization: Skip byte entirely if all 8 bits are used
-        if (loadedBitmap[i] == 0xFF) {
+        if (buffer->loadedBitmap[i] == 0xFF) {
             contiguousPagesFound = 0;
             continue;
         }
 
         // Deep bit scanning within the byte
         for (int j = 0; j < 8; j++) {
-            if (getBit(&loadedBitmap[i], j) == 1) {
+            if (getBit(&buffer->loadedBitmap[i], j) == 1) {
                 // Sequence broken: reset contiguous tracking
                 contiguousPagesFound = 0;
             } else {
@@ -358,7 +360,7 @@ Address falloc(uint16_t sizePages, int totalClusters) {
 
                     // Mark every newly allocated bit as USED in the bitmap memory block
                     for (uint32_t k = startPageIndex; k < startPageIndex + sizePages; k++) {
-                        markBitUsed(k);
+                        markBitUsed(k, buffer);
                     }
 
                     // Map linear page index back to hardware coordinate structure
@@ -377,26 +379,25 @@ Address falloc(uint16_t sizePages, int totalClusters) {
     return allocatedAddr;
 }
 
-
 /**
  * Frees a contiguous block of allocated pages in the bitmap.
  * @param startAddress The hardware coordinate (cluster/page) where the allocation begins.
  * @param lengthPages  The number of contiguous pages (bits) to clear.
  * @return BitmapStatus Status of the operation.
  */
-BitmapStatus freeAllocation(Address startAddress, uint16_t lengthPages) {
-    // 1. Prevent operations on the failure/invalid address (0xFFFF)
+BitmapStatus freeAllocation(Address startAddress, uint16_t lengthPages, Buffer* buffer) {
+    // Prevent operations on the failure/invalid address (0xFFFF)
     if (startAddress.clusterAddr == 0xFFFF) {
         return bm_out_of_bounds;
     }
 
-    // 2. Convert the hardware coordinate back into a linear page index
+    // Convert the hardware coordinate back into a linear page index
     // Since there are 256 pages per cluster, we multiply the cluster index by 256
     uint32_t startPageIndex = (startAddress.clusterAddr * 256) + startAddress.pageAddr;
 
-    // 3. Loop through and free each allocated page in the loaded bitmap
+    // Loop through and free each allocated page in the loaded bitmap
     for (uint32_t i = 0; i < lengthPages; i++) {
-        BitmapStatus status = markBitUnused(startPageIndex + i);
+        BitmapStatus status = markBitUnused(startPageIndex + i, buffer);
 
         // If we accidentally try to clear a bit out of bounds, halt and return the error
         if (status != bm_success) {
@@ -411,15 +412,19 @@ BitmapStatus freeAllocation(Address startAddress, uint16_t lengthPages) {
 // File Read/Write Operations
 // ============================================================================
 
-FileStatus createFile(char* path, char* filename, uint8_t *data, uint16_t size, int totalClusters) {
+FileStatus createFile(char* path, char* filename, uint8_t *data, uint16_t size, int totalClusters, Buffer *buffer) {
 
     if (size == 0) return fs_success;
+
+    // [FIX]: Load current state of the filesystem metadata into the struct buffer before proceeding
+    readTable(path, buffer);
+    loadChunk(path, 1, buffer->loadedBitmap);
 
     // Calculate pages needed for file
     uint16_t pagesNeeded = (size + PAGE_SIZE - 1) / PAGE_SIZE;
 
     // Allocate space on virtual disk
-    Address fileAddr = falloc(pagesNeeded, totalClusters);
+    Address fileAddr = falloc(pagesNeeded, totalClusters, buffer);
     if (fileAddr.clusterAddr == 0xFFFF) return fs_out_of_capacity;
 
     // Create Table Entry
@@ -429,8 +434,8 @@ FileStatus createFile(char* path, char* filename, uint8_t *data, uint16_t size, 
     newFile.address = fileAddr;
     newFile.pagesOccupied = pagesNeeded;
 
-    if (addTableEntry(loadedTable, &newFile) != ts_success) {
-        freeAllocation(fileAddr, pagesNeeded);
+    if (addTableEntry(buffer, &newFile) != ts_success) {
+        freeAllocation(fileAddr, pagesNeeded, buffer);
         return fs_unknown;
     }
 
@@ -449,8 +454,8 @@ FileStatus createFile(char* path, char* filename, uint8_t *data, uint16_t size, 
     if (written != size) return fs_err_write_failed;
 
     // Save updated metadata to disk
-    syncTable(path);
-    syncBitmap(path);
+    syncTable(path, buffer);
+    syncBitmap(path, buffer);
 
     return fs_success;
 
@@ -460,13 +465,18 @@ FileStatus createFile(char* path, char* filename, uint8_t *data, uint16_t size, 
  * Reads a file from the virtual disk into a provided buffer.
  * Note: outBuffer must be large enough to hold (pagesOccupied * 256) bytes.
  */
-FileStatus readFile(char* path, char* filename, uint8_t* outBuffer, size_t* bytesRead) {
+FileStatus readFile(char* path, char* filename, uint8_t* outBuffer, size_t* bytesRead, Buffer *buffer) {
     TableEntry* target = NULL;
+
+    // [FIX]: Load the directory table from disk into the struct buffer first
+    if (readTable(path, buffer) != fs_success) {
+        return fs_unknown;
+    }
 
     // Find the file in the loaded directory table
     for (int i = 0; i < CLUSTER_SIZE / sizeof(TableEntry); i++) {
-        if (strncmp(loadedTable[i].name, filename, 27) == 0) {
-            target = &loadedTable[i];
+        if (strncmp(buffer->loadedTable[i].name, filename, 27) == 0) {
+            target = &buffer->loadedTable[i];
             break;
         }
     }
@@ -492,26 +502,26 @@ FileStatus readFile(char* path, char* filename, uint8_t* outBuffer, size_t* byte
 }
 
 // Helper to get required buffer size for exporting to Python
-int getFileSize(char* path, char* filename) {
-    readTable(path);
+int getFileSize(char* path, char* filename, Buffer* buffer) {
+    readTable(path, buffer);
     for (int i = 0; i < CLUSTER_SIZE / sizeof(TableEntry); i++) {
-        if (strncmp(loadedTable[i].name, filename, 27) == 0) {
-            return loadedTable[i].pagesOccupied * PAGE_SIZE;
+        if (strncmp(buffer->loadedTable[i].name, filename, 27) == 0) {
+            return buffer->loadedTable[i].pagesOccupied * PAGE_SIZE;
         }
     }
     return -1; // File not found
 }
 
 // High-level delete wrapper
-FileStatus deleteFile(char* path, char* filename) {
-    readTable(path);
-    loadChunk(path, 1, loadedBitmap);
-    
-    if (removeTableEntry(loadedTable, filename) != ts_success) {
+FileStatus deleteFile(char* path, char* filename, Buffer* buffer) {
+    readTable(path, buffer);
+    loadChunk(path, 1, buffer->loadedBitmap);
+
+    if (removeTableEntry(buffer, filename) != ts_success) {
         return fs_unknown;
     }
-    
-    syncTable(path);
-    syncBitmap(path);
+
+    syncTable(path, buffer);
+    syncBitmap(path, buffer);
     return fs_success;
 }
