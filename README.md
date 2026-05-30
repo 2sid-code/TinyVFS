@@ -52,8 +52,8 @@ Each cluster is 64 KB. The root directory table (Cluster 0) stores up to 2048 fi
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/your-username/tinyvfs.git
-cd tinyvfs
+git clone https://github.com/2sid-code/TinyVFS
+cd TinyVFS
 ```
 
 ### 2. Build the C shared library
