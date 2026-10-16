@@ -1,6 +1,6 @@
-# TinyVFS
+# TinyFS
 
-A tiny virtual file system built in C, with a Python CLI to drive it. TinyVFS is a hands-on exploration of how filesystems work under the hood. Cluster allocation, directory tables, bitmap tracking packed into a single binary disk image you can poke at, break, and learn from.
+A tiny file system built in C, with a Python CLI to drive it. TinyVFS is a hands-on exploration of how filesystems work under the hood. Cluster allocation, directory tables, bitmap tracking packed into a single binary disk image you can poke at, break, and learn from.
 
 > [WARNING]
 > **ALPHA SOFTWARE - DISK FORMAT IS UNSTABLE**
@@ -22,7 +22,7 @@ A tiny virtual file system built in C, with a Python CLI to drive it. TinyVFS is
 
 ## How It Works
 
-TinyVFS simulates a block-storage device inside a single binary file on your host OS. The design is intentionally straightforward: the C engine (`src/vfs.c`) handles cluster reads/writes, bitmap-based page allocation, and a flat root directory table, all the moving parts of a real filesystem, kept small enough to read in an afternoon. The Python CLI (`tinyvfs.py`) wraps the compiled shared library via `ctypes` and exposes a clean command-line interface.
+TinyFS simulates a block-storage device inside a single binary file on your host OS. The design is intentionally straightforward: the C engine (`src/vfs.c`) handles cluster reads/writes, bitmap-based page allocation, and a flat root directory table, all the moving parts of a real filesystem, kept small enough to read in an afternoon. The Python CLI (`tinyvfs.py`) wraps the compiled shared library via `ctypes` and exposes a clean command-line interface.
 
 ```
 ┌─────────────────────────────────────────────────────┐
